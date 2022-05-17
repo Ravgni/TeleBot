@@ -38,15 +38,21 @@ func main() {
 		if update.Message == nil {
 			continue
 		}
+		var reply string
+		if update.Message.Command() == "rahunok" {
+			reply = "99"
 
+		} else {
+			reply = update.Message.Text
+		}
 		// Now that we know we've gotten a new message, we can construct a
 		// reply! We'll take the Chat ID and Text from the incoming message
 		// and use it to create a new message.
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, update.Message.Text)
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
 		// We'll also say that this message is a reply to the previous message.
 		// For any other specifications than Chat ID or Text, you'll need to
 		// set fields on the `MessageConfig`.
-		msg.ReplyToMessageID = update.Message.MessageID
+		//msg.ReplyToMessageID = update.Message.MessageID
 
 		// Okay, we're sending our message off! We don't care about the message
 		// we just sent, so we'll discard it.
