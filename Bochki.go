@@ -16,24 +16,30 @@ import (
 )
 
 var validResult = regexp.MustCompile(`(?s)СЛОВКО [\d]*.*./6.*https://slovko.zaxid.net/`)
+var findWord = regexp.MustCompile(`[0-9]+`)
+var findResult = regexp.MustCompile(`./6`)
 var bot *tgbotapi.BotAPI
 var err error
 var UserStatusC, GameStateC *mongo.Collection
 
+var ResultQueryID = uuid.New().String()
+
 type UserStatus struct {
 	ID             int64                `bson:"_id,omitempty"`
-	InvitePending  bool                 `bson:"InvitePending"`
 	WaitForContact bool                 `bson:"WaitForContact"`
 	Games          []primitive.ObjectID `bson:"Games"`
 }
 
 type PlayerScore struct {
-	Player int64 `bson:"Player"`
-	Score  uint  `bson:"Score"`
+	Player     int64  `bson:"Player"`
+	PlayerName string `bson:"PlayerName"`
+	Score      uint   `bson:"Score"`
+	WordNum    uint   `bson:"WordNum"`
 }
 
 type Game struct {
-	Players    []PlayerScore `bson:"PlayerScore"`
+	Players    []PlayerScore `bson:"Players"`
+	Leader     string        `bson:"Leader"`
 	TotalScore uint          `bson:"TotalScore"`
 }
 
@@ -68,9 +74,6 @@ func main() {
 	// Start polling Telegram for updates.
 	updates := bot.GetUpdatesChan(updateConfig)
 
-	// var wordNum = regexp.MustCompile(`[\d]`)
-	// var resultScore = regexp.MustCompile(`./6`)
-
 	// Let's go through each update that we're getting from Telegram.
 	for update := range updates {
 		if update.InlineQuery != nil {
@@ -90,36 +93,49 @@ func main() {
 }
 
 func NewUserStatus(id int64) UserStatus {
-	return UserStatus{id, false, false, []primitive.ObjectID{}}
+	return UserStatus{id, false, []primitive.ObjectID{}}
 }
 
 func ProcessQuery(update tgbotapi.Update) {
 	var options []interface{}
 
-	article := tgbotapi.NewInlineQueryResultArticle(uuid.New().String(), "Рахунок", "Рахунок 5-0")
-	article.Description = "Показати рахунок"
-	options = append(options, article)
+	if update.InlineQuery.Query == "Рахунок" {
+		article := tgbotapi.NewInlineQueryResultArticle(ResultQueryID, "Рахунок", "1111")
+		article.Description = "Показати рахунок"
+		options = append(options, article)
+	}
 
 	if validResult.MatchString(update.InlineQuery.Query) {
-		article1 := tgbotapi.NewInlineQueryResultArticle(uuid.New().String(), "тест", update.InlineQuery.Query)
-		article1.Description = "Показати тест"
+		article1 := tgbotapi.NewInlineQueryResultArticle(uuid.New().String()+"S", "Додати", update.InlineQuery.Query)
+		article1.Description = "Додати словко"
 		options = append(options, article1)
+		// PendingQueries[]
 	}
 
-	inlineConf := tgbotapi.InlineConfig{
-		InlineQueryID: update.InlineQuery.ID,
-		IsPersonal:    true,
-		CacheTime:     0,
-		Results:       options,
-	}
+	if options != nil {
+		inlineConf := tgbotapi.InlineConfig{
+			InlineQueryID: update.InlineQuery.ID,
+			IsPersonal:    true,
+			CacheTime:     0,
+			Results:       options,
+		}
 
-	if _, err = bot.Request(inlineConf); err != nil {
-		log.Println(err)
+		if _, err = bot.Request(inlineConf); err != nil {
+			log.Println(err)
+		}
 	}
 }
 
 func ProcessQueryResult(update tgbotapi.Update) {
-	msg := tgbotapi.NewMessage(update.ChosenInlineResult.From.ID, "Додати до рахунку")
+	var reply string
+	query := update.ChosenInlineResult.Query
+	switch update.ChosenInlineResult.ResultID[len(update.ChosenInlineResult.ResultID)-1] {
+	case 'S':
+		word, _ := strconv.Atoi(findWord.FindString(query))
+		score := Score(findResult.FindString(query)[0])
+		reply = UpdateScore(update.ChosenInlineResult.From.ID, word, score)
+	}
+	msg := tgbotapi.NewMessage(update.ChosenInlineResult.From.ID, reply)
 
 	if _, err = bot.Send(msg); err != nil {
 		// Note that panics are a bad way to handle errors. Telegram can
@@ -145,6 +161,8 @@ func ProcessCommand(update tgbotapi.Update) {
 		//TODO optimize with map vs DB
 		UserStatusC.UpdateByID(context.TODO(), UserID, bson.D{{Key: "$set", Value: bson.D{{Key: "WaitForContact", Value: true}}}})
 	case "score":
+	case "addWord":
+
 	}
 	if reply != "" {
 		msg := tgbotapi.NewMessage(UserID, reply)
@@ -209,7 +227,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 		if err != nil {
 			panic(err)
 		}
-		AcceptInvite(From.UserName, From.ID, ToID)
+		AcceptInvite(From.ID, From.UserName, ToID)
 	} else if update.CallbackQuery.Data[0] == 'R' {
 		ToID, err := strconv.ParseInt(update.CallbackQuery.Data[2:len(update.CallbackQuery.Data)], 10, 0)
 		if err != nil {
@@ -219,18 +237,18 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 	}
 }
 
-func AcceptInvite(fromName string, from int64, to int64) {
+func AcceptInvite(from int64, fromName string, to int64) {
 	msg := tgbotapi.NewMessage(to, "Гравець "+fromName+"прийняв запрошення на гру")
 	if _, err = bot.Send(msg); err != nil {
 		panic(err)
 	}
 
-	if GameId, insertErr := GameStateC.InsertOne(context.TODO(), Game{Players: []PlayerScore{{from, 0}, {to, 0}}, TotalScore: 0}); insertErr != nil {
+	if GameId, insertErr := GameStateC.InsertOne(context.TODO(), Game{Players: []PlayerScore{{from, fromName, 0, 0}, {to, "", 0, 0}}}); insertErr != nil {
 		log.Print(insertErr)
 	} else if GameId != nil {
 		filter := bson.D{{Key: "$or", Value: []interface{}{bson.D{{Key: "_id", Value: from}}, bson.D{{Key: "_id", Value: to}}}}}
-		opts := bson.D{{Key: "$addToSet", Value: bson.D{{Key: "Games", Value: GameId.InsertedID}}}}
-		UserStatusC.UpdateMany(context.TODO(), filter, opts)
+		update := bson.D{{Key: "$addToSet", Value: bson.D{{Key: "Games", Value: GameId.InsertedID}}}}
+		UserStatusC.UpdateMany(context.TODO(), filter, update)
 	}
 }
 
@@ -239,4 +257,64 @@ func RejectInvite(from string, to int64) {
 	if _, err = bot.Send(msg); err != nil {
 		panic(err)
 	}
+}
+
+func Score(in byte) int {
+	if in >= '1' && in <= '6' {
+		return int('1'-in) + 6
+	} else {
+		return 0
+	}
+}
+
+func UpdateScore(from int64, wordNum int, score int) string {
+	var User UserStatus
+	if err := UserStatusC.FindOne(context.TODO(), bson.D{{Key: "_id", Value: from}}).Decode(&User); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return "Спочатку ініціюйте бота (/start)"
+		} else {
+			return "Помилка"
+		}
+	} else {
+		if User.Games == nil {
+			return "Не має початих ігор"
+		} else {
+			playerscore0 := BsonArrayValAt("Players", 0, "Score")
+			playerscore1 := BsonArrayValAt("Players", 1, "Score")
+
+			matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": bson.M{"$in": User.Games}}}}
+			unwindstage := bson.D{{Key: "$unwind", Value: "$Players"}}
+			setscorestage := bson.D{{Key: "$set", Value: bson.M{"Players.Score": bson.M{"$cond": bson.M{
+				"if":   bson.M{"$eq": bson.A{"$Players.Player", from}},
+				"then": bson.M{"$sum": bson.A{"$Players.Score", score}},
+				"else": "$Players.Score"}}}}}
+			sortstage := bson.D{{Key: "$sort", Value: bson.M{"_id": 1, "Players.Score": -1}}}
+			groupstage := bson.D{{Key: "$group", Value: bson.M{
+				"_id":        "$_id",
+				"Players":    bson.M{"$push": "$Players"},
+				"Leader":     bson.M{"$first": "$Leader"},
+				"TotalScore": bson.M{"$first": "$TotalScore"}}}}
+			setleaderstage := bson.D{{Key: "$set", Value: bson.M{
+				"Leader": bson.M{"$cond": bson.M{
+					"if":   bson.M{"$gt": bson.A{playerscore0, playerscore1}},
+					"then": BsonArrayValAt("Players", 0, "PlayerName"),
+					"else": "None"}},
+				"TotalScore": bson.M{"$cond": bson.M{
+					"if":   bson.M{"$gt": bson.A{playerscore0, playerscore1}},
+					"then": bson.M{"$subtract": bson.A{playerscore0, playerscore1}},
+					"else": 0}}}}}
+			mergestage := bson.D{{Key: "$merge", Value: bson.M{"into": "Games", "on": "_id", "whenMatched": "merge", "whenNotMatched": "discard"}}}
+
+			pipeline := mongo.Pipeline{matchstage, unwindstage, setscorestage, sortstage, groupstage, setleaderstage, mergestage}
+			if cur, err := GameStateC.Aggregate(context.TODO(), pipeline); cur != nil && err == nil {
+				return "Словко додано до рахунку"
+			} else {
+				return "Помилка"
+			}
+		}
+	}
+}
+
+func BsonArrayValAt(arr string, idx uint, val string) bson.M {
+	return bson.M{"$getField": bson.M{"field": val, "input": bson.M{"$arrayElemAt": bson.A{"$" + arr, idx}}}}
 }
