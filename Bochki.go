@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -21,26 +22,32 @@ var findResult = regexp.MustCompile(`./6`)
 var bot *tgbotapi.BotAPI
 var err error
 var UserStatusC, GameStateC *mongo.Collection
-
-var ResultQueryID = uuid.New().String()
+var UserMap map[int64]*UserStatus
 
 type UserStatus struct {
-	ID             int64                `bson:"_id,omitempty"`
-	WaitForContact bool                 `bson:"WaitForContact"`
-	Games          []primitive.ObjectID `bson:"Games"`
+	UserID          int64
+	ContactPending  bool
+	GameNamePending bool
+	GameName        string
 }
 
-type PlayerScore struct {
+type MongoUser struct {
+	ID    int64                `bson:"_id,omitempty"`
+	Games []primitive.ObjectID `bson:"Games"`
+}
+
+type MongoPlayerScore struct {
 	Player     int64  `bson:"Player"`
 	PlayerName string `bson:"PlayerName"`
 	Score      uint   `bson:"Score"`
 	WordNum    uint   `bson:"WordNum"`
 }
 
-type Game struct {
-	Players    []PlayerScore `bson:"Players"`
-	Leader     string        `bson:"Leader"`
-	TotalScore uint          `bson:"TotalScore"`
+type MongoGame struct {
+	Players    []MongoPlayerScore `bson:"Players"`
+	Leader     string             `bson:"Leader"`
+	TotalScore uint               `bson:"TotalScore"`
+	Name       string             `bson:"Name"`
 }
 
 func main() {
@@ -52,6 +59,9 @@ func main() {
 	*/
 	UserStatusC = client.Database("BochkiDB").Collection("UserStatus")
 	GameStateC = client.Database("BochkiDB").Collection("Games")
+
+	UserMap = make(map[int64]*UserStatus)
+	PopulateUserMap()
 
 	token := os.Getenv("TELEGRAM_BOCHKI")
 	bot, err = tgbotapi.NewBotAPI(token)
@@ -92,24 +102,48 @@ func main() {
 	}
 }
 
-func NewUserStatus(id int64) UserStatus {
-	return UserStatus{id, false, []primitive.ObjectID{}}
+func PopulateUserMap() {
+	var users []MongoUser
+	if cur, err := UserStatusC.Find(context.TODO(), bson.M{}); cur != nil && err == nil && cur.All(context.TODO(), &users) == nil {
+		for _, user := range users {
+			UserMap[user.ID] = &UserStatus{UserID: user.ID}
+		}
+	}
 }
 
 func ProcessQuery(update tgbotapi.Update) {
 	var options []interface{}
 
 	if update.InlineQuery.Query == "Рахунок" {
-		article := tgbotapi.NewInlineQueryResultArticle(ResultQueryID, "Рахунок", "1111")
-		article.Description = "Показати рахунок"
-		options = append(options, article)
+		var User MongoUser
+		if err = UserStatusC.FindOne(context.TODO(), bson.M{"_id": update.InlineQuery.From.ID}).Decode(&User); err == nil {
+			if cur, err := GameStateC.Find(context.TODO(), bson.M{"_id": bson.M{"$in": User.Games}}); cur != nil && err == nil {
+				var results []MongoGame
+				if err = cur.All(context.TODO(), &results); err == nil {
+					for _, result := range results {
+						log.Print(result)
+						var ResultMessage string
+						if result.TotalScore > 0 {
+							ResultMessage = "Лідер " + result.Leader + " з перевагою " + fmt.Sprint(result.TotalScore)
+						} else {
+							ResultMessage = "Лідер відсутній"
+						}
+						article := tgbotapi.NewInlineQueryResultArticle(uuid.New().String(), "Рахунок "+result.Name, ResultMessage)
+						article.Description = "Показати рахунок"
+						options = append(options, article)
+					}
+				}
+			}
+		}
+		if err != nil {
+			log.Print(err)
+		}
 	}
 
 	if validResult.MatchString(update.InlineQuery.Query) {
 		article1 := tgbotapi.NewInlineQueryResultArticle(uuid.New().String()+"S", "Додати", update.InlineQuery.Query)
 		article1.Description = "Додати словко"
 		options = append(options, article1)
-		// PendingQueries[]
 	}
 
 	if options != nil {
@@ -131,48 +165,57 @@ func ProcessQueryResult(update tgbotapi.Update) {
 	query := update.ChosenInlineResult.Query
 	switch update.ChosenInlineResult.ResultID[len(update.ChosenInlineResult.ResultID)-1] {
 	case 'S':
-		word, _ := strconv.Atoi(findWord.FindString(query))
-		score := Score(findResult.FindString(query)[0])
-		reply = UpdateScore(update.ChosenInlineResult.From.ID, word, score)
+		reply = UpdateScore(update.ChosenInlineResult.From.ID, query)
 	}
-	msg := tgbotapi.NewMessage(update.ChosenInlineResult.From.ID, reply)
-
-	if _, err = bot.Send(msg); err != nil {
-		// Note that panics are a bad way to handle errors. Telegram can
-		// have service outages or network errors, you should retry sending
-		// messages or more gracefully handle failures.
-		panic(err)
+	if reply != "" {
+		SendMessage(update.ChosenInlineResult.From.ID, reply)
 	}
 }
 
 func ProcessCommand(update tgbotapi.Update) {
 	UserID := update.Message.From.ID
-	var reply string
 	switch update.Message.Command() {
 	case "start":
-		filter := bson.D{{Key: "_id", Value: UserID}}
-		update := bson.D{{Key: "$setOnInsert", Value: NewUserStatus(UserID)}}
+		filter := bson.M{"_id": UserID}
+		update := bson.M{"$setOnInsert": MongoUser{ID: UserID}}
 		opts := options.Update().SetUpsert(true)
 		if _, insertErr := UserStatusC.UpdateOne(context.TODO(), filter, update, opts); insertErr != nil {
 			log.Print(insertErr)
 		}
+		UserMap[UserID] = &UserStatus{UserID: UserID}
 	case "invite":
-		reply = "Додайте контакт"
-		//TODO optimize with map vs DB
-		UserStatusC.UpdateByID(context.TODO(), UserID, bson.D{{Key: "$set", Value: bson.D{{Key: "WaitForContact", Value: true}}}})
-	case "score":
-	case "addWord":
+		UserMap[UserID].GameNamePending = true
 
-	}
-	if reply != "" {
-		msg := tgbotapi.NewMessage(UserID, reply)
+		var buttonRow []tgbotapi.InlineKeyboardButton
+		var games []bson.D
 
-		if _, err = bot.Send(msg); err != nil {
-			// Note that panics are a bad way to handle errors. Telegram can
-			// have service outages or network errors, you should retry sending
-			// messages or more gracefully handle failures.
-			panic(err)
+		matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": UserID}}}
+		unwindstage := bson.D{{Key: "$unwind", Value: "$Games"}}
+		lookupstage := bson.D{{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "Games"},
+			{Key: "localField", Value: "Games"},
+			{Key: "foreignField", Value: "_id"},
+			{Key: "as", Value: "Games"}}}}
+		addfieldstage := bson.D{{Key: "$addFields", Value: bson.M{"Name": "$Games.Name"}}}
+		projectstage := bson.D{{Key: "$project", Value: bson.D{{Key: "_id", Value: 0}, {Key: "Name", Value: 1}}}}
+
+		if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, addfieldstage, projectstage}); err == nil && cur.All(context.TODO(), &games) == nil {
+			buttonRow = tgbotapi.NewInlineKeyboardRow()
+			for _, game := range games {
+				if gameName, ok := game[0].Value.(string); ok {
+					buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+gameName, "G "+gameName))
+					log.Print(game)
+				}
+			}
 		}
+		reply := "Виберіть існуючу гру або додайте нову"
+		if buttonRow != nil {
+			SendMessage(UserID, reply, tgbotapi.NewInlineKeyboardMarkup(buttonRow))
+		} else {
+			SendMessage(UserID, reply)
+		}
+
+	case "score":
 	}
 }
 
@@ -182,78 +225,110 @@ func ProcessMessage(update tgbotapi.Update) {
 
 	//TODO optimize with map vs DB
 	if To := update.Message.Contact; To != nil {
-		if err := UserStatusC.FindOne(context.TODO(), bson.D{{Key: "_id", Value: From.ID}, {Key: "WaitForContact", Value: true}}).Err(); err != nil {
-			if err == mongo.ErrNoDocuments {
-				reply = "Спочатку викличте команду /invite"
-			}
+		if !UserMap[From.ID].ContactPending {
+			reply = "Спочатку викличте команду /invite"
 		} else {
-			if err := UserStatusC.FindOne(context.TODO(), bson.D{{Key: "_id", Value: /*To.UserID*/ From.ID}}).Err(); err != nil {
+			if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": /*To.UserID*/ From.ID}).Err(); err != nil {
 				if err == mongo.ErrNoDocuments {
 					reply = "Контакт не звертався до бота"
 				}
 			} else {
-				SendInvite(From.FirstName+" "+From.LastName, From.ID /*To.UserID*/, From.ID)
+				SendInvite(From.FirstName+" "+From.LastName, From.ID, From.ID /*To.UserID*/)
 				reply = "Запрошення відправлено"
 			}
-			UserStatusC.UpdateByID(context.TODO(), From.ID, bson.D{{Key: "$set", Value: bson.D{{Key: "WaitForContact", Value: false}}}})
+			UserMap[From.ID].ContactPending = false
 		}
 	}
-	if reply != "" {
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
+	if validResult.MatchString(update.Message.Text) {
+		reply = UpdateScore(From.ID, update.Message.Text)
+	}
 
-		if _, err := bot.Send(msg); err != nil {
-			panic(err)
-		}
+	if user, ok := UserMap[From.ID]; ok && user.GameNamePending {
+		user.GameName = update.Message.Text
+		user.GameNamePending = false
+		user.ContactPending = true
+		reply = "Додайте контакт"
+	}
+	if reply != "" {
+		SendMessage(update.Message.Chat.ID, reply)
 	}
 }
 
 func SendInvite(fromName string, from int64, to int64) {
-	msg := tgbotapi.NewMessage(to, "Запрошення на гру від "+fromName)
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+	inlineMarkup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Прийняти", "A "+strconv.FormatInt(from, 10)),
 			tgbotapi.NewInlineKeyboardButtonData("Відхилити", "R "+strconv.FormatInt(from, 10)),
 		))
-	if _, err = bot.Send(msg); err != nil {
-		panic(err)
-	}
+	SendMessage(to, "Запрошення на гру від "+fromName, inlineMarkup)
 }
 
 func ProcessCallbackQuery(update tgbotapi.Update) {
-	From := update.CallbackQuery.From
+	from := update.CallbackQuery.From
+	data := update.CallbackQuery.Data
 	//TODO Regexp
-	if update.CallbackQuery.Data[0] == 'A' {
-		ToID, err := strconv.ParseInt(update.CallbackQuery.Data[2:len(update.CallbackQuery.Data)], 10, 0)
+	switch data[0] {
+	case 'A':
+		ToID, err := strconv.ParseInt(data[2:], 10, 0)
 		if err != nil {
 			panic(err)
 		}
-		AcceptInvite(From.ID, From.UserName, ToID)
-	} else if update.CallbackQuery.Data[0] == 'R' {
-		ToID, err := strconv.ParseInt(update.CallbackQuery.Data[2:len(update.CallbackQuery.Data)], 10, 0)
+		//TODO Add ToName arg
+		AcceptInvite(from.ID, from.UserName, ToID, "", UserMap[ToID].GameName)
+	case 'R':
+		ToID, err := strconv.ParseInt(data[2:], 10, 0)
 		if err != nil {
 			panic(err)
 		}
-		RejectInvite(From.FirstName, ToID)
+		RejectInvite(from.FirstName, ToID)
+	case 'G':
+		if data != "" {
+			user := UserMap[from.ID]
+			user.GameName = data[2:]
+			user.GameNamePending = false
+			user.ContactPending = true
+			SendMessage(from.ID, "Додайте контакт")
+		}
 	}
 }
 
-func AcceptInvite(from int64, fromName string, to int64) {
-	msg := tgbotapi.NewMessage(to, "Гравець "+fromName+"прийняв запрошення на гру")
-	if _, err = bot.Send(msg); err != nil {
-		panic(err)
-	}
+func AcceptInvite(from int64, fromName string, to int64, toName string, gameName string) {
+	SendMessage(to, "Гравець "+fromName+"прийняв запрошення на гру")
 
-	if GameId, insertErr := GameStateC.InsertOne(context.TODO(), Game{Players: []PlayerScore{{from, fromName, 0, 0}, {to, "", 0, 0}}}); insertErr != nil {
+	// TODO improve DB queries
+	filter := bson.D{{Key: "Name", Value: gameName}, {Key: "Players.Player", Value: to}}
+	update := bson.M{"$setOnInsert": MongoGame{Players: []MongoPlayerScore{{from, fromName, 0, 0}, {to, toName, 0, 0}}, Name: gameName}}
+	opts := options.Update().SetUpsert(true)
+	if GameId, insertErr := GameStateC.UpdateOne(context.TODO(), filter, update, opts); insertErr != nil {
 		log.Print(insertErr)
 	} else if GameId != nil {
-		filter := bson.D{{Key: "$or", Value: []interface{}{bson.D{{Key: "_id", Value: from}}, bson.D{{Key: "_id", Value: to}}}}}
-		update := bson.D{{Key: "$addToSet", Value: bson.D{{Key: "Games", Value: GameId.InsertedID}}}}
+		if GameId.UpsertedCount == 0 {
+			if cur, err := GameStateC.Find(context.TODO(), bson.D{{Key: "Name", Value: gameName}, {Key: "Players.Player", Value: from}}); err == nil && cur.RemainingBatchLength() == 0 {
+				GameStateC.UpdateOne(context.TODO(), filter, bson.M{"$push": bson.M{"Players": MongoPlayerScore{from, fromName, 0, 0}}})
+				filter = bson.D{{Key: "_id", Value: from}}
+			}
+		} else {
+			filter = bson.D{{Key: "$or", Value: bson.A{bson.M{"_id": from}, bson.M{"_id": to}}}}
+		}
+		update := bson.M{"$addToSet": bson.M{"Games": GameId.UpsertedID}}
 		UserStatusC.UpdateMany(context.TODO(), filter, update)
 	}
 }
 
-func RejectInvite(from string, to int64) {
-	msg := tgbotapi.NewMessage(to, "Гравець "+from+"відхилив запрошення на гру")
+func RejectInvite(fromName string, to int64) {
+	SendMessage(to, "Гравець "+fromName+"відхилив запрошення на гру")
+}
+
+func SendMessage(to int64, text string, inlineMarkup ...interface{}) {
+	msg := tgbotapi.NewMessage(to, text)
+	if len(inlineMarkup) > 0 {
+		if markup, ok := inlineMarkup[0].(tgbotapi.InlineKeyboardMarkup); ok {
+			msg.ReplyMarkup = markup
+		}
+	}
+	// Note that panics are a bad way to handle errors. Telegram can
+	// have service outages or network errors, you should retry sending
+	// messages or more gracefully handle failures.
 	if _, err = bot.Send(msg); err != nil {
 		panic(err)
 	}
@@ -267,9 +342,13 @@ func Score(in byte) int {
 	}
 }
 
-func UpdateScore(from int64, wordNum int, score int) string {
-	var User UserStatus
-	if err := UserStatusC.FindOne(context.TODO(), bson.D{{Key: "_id", Value: from}}).Decode(&User); err != nil {
+//TODO WordNum validation
+func UpdateScore(from int64, query string) string {
+	// wordNum, _ := strconv.Atoi(findWord.FindString(query))
+	score := Score(findResult.FindString(query)[0])
+
+	var User MongoUser
+	if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": from}).Decode(&User); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return "Спочатку ініціюйте бота (/start)"
 		} else {
@@ -284,10 +363,11 @@ func UpdateScore(from int64, wordNum int, score int) string {
 
 			matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": bson.M{"$in": User.Games}}}}
 			unwindstage := bson.D{{Key: "$unwind", Value: "$Players"}}
-			setscorestage := bson.D{{Key: "$set", Value: bson.M{"Players.Score": bson.M{"$cond": bson.M{
-				"if":   bson.M{"$eq": bson.A{"$Players.Player", from}},
-				"then": bson.M{"$sum": bson.A{"$Players.Score", score}},
-				"else": "$Players.Score"}}}}}
+			setscorestage := bson.D{{Key: "$set", Value: bson.M{
+				"Players.Score": bson.M{"$cond": bson.M{
+					"if":   bson.M{"$eq": bson.A{"$Players.Player", from}},
+					"then": bson.M{"$sum": bson.A{"$Players.Score", score}},
+					"else": "$Players.Score"}}}}}
 			sortstage := bson.D{{Key: "$sort", Value: bson.M{"_id": 1, "Players.Score": -1}}}
 			groupstage := bson.D{{Key: "$group", Value: bson.M{
 				"_id":        "$_id",
@@ -313,8 +393,4 @@ func UpdateScore(from int64, wordNum int, score int) string {
 			}
 		}
 	}
-}
-
-func BsonArrayValAt(arr string, idx uint, val string) bson.M {
-	return bson.M{"$getField": bson.M{"field": val, "input": bson.M{"$arrayElemAt": bson.A{"$" + arr, idx}}}}
 }

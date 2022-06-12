@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -22,4 +23,8 @@ func ConnectDB() (*mongo.Client, context.Context) {
 	}
 
 	return client, ctx
+}
+
+func BsonArrayValAt(arr string, idx uint, val string) bson.M {
+	return bson.M{"$getField": bson.M{"field": val, "input": bson.M{"$arrayElemAt": bson.A{"$" + arr, idx}}}}
 }
