@@ -24,7 +24,6 @@ var err error
 var UserStatusC, GameStateC *mongo.Collection
 var UserMap map[int64]*UserStatus
 var PendingQueries map[uuid.UUID]*interface{}
-var message tgbotapi.Message
 
 func main() {
 	client, ctx := ConnectDB()
@@ -205,9 +204,10 @@ func ProcessMessage(update tgbotapi.Update) {
 			UserMap[From.ID].ContactPending = false
 		}
 	}
-	// if validResult.MatchString(update.Message.Text) {
-	// 	reply = UpdateScore(From.ID, update.Message.Text)
-	// }
+
+	if update.Message.ViaBot == nil && validResult.MatchString(update.Message.Text) {
+		reply = UpdateScore(From.ID, update.Message.Text)
+	}
 
 	if user, ok := UserMap[From.ID]; ok && user.GameNamePending {
 		user.GameName = update.Message.Text
@@ -282,7 +282,7 @@ func AcceptInvite(from int64, fromName string, to int64, toName string, gameName
 				filter = bson.D{{Key: "_id", Value: from}}
 			}
 		} else {
-			filter = bson.D{{Key: "$or", Value: bson.A{bson.M{"_id": from}, bson.M{"_id": to}}}}
+			filter = bson.D{{Key: "_id", Value: bson.M{"$in": bson.A{from, to}}}}
 			DocID = GameId.UpsertedID
 		}
 		update := bson.M{"$addToSet": bson.M{"Games": DocID}}
@@ -304,7 +304,7 @@ func SendMessage(to int64, text string, inlineMarkup ...interface{}) {
 	// Note that panics are a bad way to handle errors. Telegram can
 	// have service outages or network errors, you should retry sending
 	// messages or more gracefully handle failures.
-	if message, err = bot.Send(msg); err != nil {
+	if _, err = bot.Send(msg); err != nil {
 		panic(err)
 	}
 }
