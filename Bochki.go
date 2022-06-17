@@ -125,9 +125,7 @@ func ProcessQueryResult(update tgbotapi.Update) {
 		reply = UpdateScore(update.ChosenInlineResult.From.ID, query)
 	}
 
-	if reply != "" {
-		SendMessage(update.ChosenInlineResult.From.ID, reply)
-	}
+	SendMessage(update.ChosenInlineResult.From.ID, reply)
 }
 
 func ProcessCommand(update tgbotapi.Update) {
@@ -215,9 +213,7 @@ func ProcessMessage(update tgbotapi.Update) {
 		user.ContactPending = true
 		reply = "Додайте контакт"
 	}
-	if reply != "" {
-		SendMessage(update.Message.Chat.ID, reply)
-	}
+	SendMessage(update.Message.Chat.ID, reply)
 }
 
 func SendInvite(fromName string, from int64, to int64) {
@@ -295,17 +291,19 @@ func RejectInvite(fromName string, to int64) {
 }
 
 func SendMessage(to int64, text string, inlineMarkup ...interface{}) {
-	msg := tgbotapi.NewMessage(to, text)
-	if len(inlineMarkup) > 0 {
-		if markup, ok := inlineMarkup[0].(tgbotapi.InlineKeyboardMarkup); ok {
-			msg.ReplyMarkup = markup
+	if text != "" {
+		msg := tgbotapi.NewMessage(to, text)
+		if len(inlineMarkup) > 0 {
+			if markup, ok := inlineMarkup[0].(tgbotapi.InlineKeyboardMarkup); ok {
+				msg.ReplyMarkup = markup
+			}
 		}
-	}
-	// Note that panics are a bad way to handle errors. Telegram can
-	// have service outages or network errors, you should retry sending
-	// messages or more gracefully handle failures.
-	if _, err := bot.Send(msg); err != nil {
-		panic(err)
+		// Note that panics are a bad way to handle errors. Telegram can
+		// have service outages or network errors, you should retry sending
+		// messages or more gracefully handle failures.
+		if _, err := bot.Send(msg); err != nil {
+			panic(err)
+		}
 	}
 }
 
