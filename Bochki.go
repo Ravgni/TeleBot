@@ -193,12 +193,12 @@ func ProcessMessage(update tgbotapi.Update) {
 		if !UserMap[From.ID].ContactPending {
 			reply = "Спочатку викличте команду /invite"
 		} else {
-			if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": /*To.UserID*/ From.ID}).Err(); err != nil {
+			if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": To.UserID}).Err(); err != nil {
 				if err == mongo.ErrNoDocuments {
 					reply = "Контакт не звертався до бота"
 				}
 			} else {
-				SendInvite(From.FirstName+" "+From.LastName, From.ID, From.ID /*To.UserID*/)
+				SendInvite(From.FirstName+" "+From.LastName, From.ID, To.UserID)
 				reply = "Запрошення відправлено"
 			}
 			UserMap[From.ID].ContactPending = false
@@ -304,7 +304,7 @@ func SendMessage(to int64, text string, inlineMarkup ...interface{}) {
 	// Note that panics are a bad way to handle errors. Telegram can
 	// have service outages or network errors, you should retry sending
 	// messages or more gracefully handle failures.
-	if _, err = bot.Send(msg); err != nil {
+	if _, err := bot.Send(msg); err != nil {
 		panic(err)
 	}
 }
