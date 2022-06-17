@@ -237,7 +237,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 		}
 		var to MongoUser
 		UserStatusC.FindOne(context.TODO(), bson.M{"_id": toID}).Decode(&to)
-		AcceptInvite(from.ID, from.UserName, toID, to.Name, UserMap[toID].GameName)
+		AcceptInvite(from.ID, from.FirstName+" "+from.LastName, toID, to.Name, UserMap[toID].GameName)
 	case 'R':
 		ToID, err := strconv.ParseInt(data[2:], 10, 0)
 		if err != nil {
@@ -260,7 +260,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 }
 
 func AcceptInvite(from int64, fromName string, to int64, toName string, gameName string) {
-	SendMessage(to, "Гравець "+fromName+"прийняв запрошення на гру")
+	SendMessage(to, "Гравець "+fromName+" прийняв запрошення на гру")
 
 	// TODO improve DB queries
 	filter := bson.D{{Key: "Name", Value: gameName}, {Key: "Players.Player", Value: to}}
@@ -287,7 +287,7 @@ func AcceptInvite(from int64, fromName string, to int64, toName string, gameName
 }
 
 func RejectInvite(fromName string, to int64) {
-	SendMessage(to, "Гравець "+fromName+"відхилив запрошення на гру")
+	SendMessage(to, "Гравець "+fromName+" відхилив запрошення на гру")
 }
 
 func SendMessage(to int64, text string, inlineMarkup ...interface{}) {
