@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -23,7 +24,6 @@ var bot *tgbotapi.BotAPI
 var err error
 var UserStatusC, GameStateC *mongo.Collection
 var UserMap map[int64]*UserStatus
-var PendingQueries map[uuid.UUID]*interface{}
 
 func main() {
 	client, ctx := ConnectDB()
@@ -46,35 +46,12 @@ func main() {
 
 	bot.Debug = true
 
-	// Create a new UpdateConfig struct with an offset of 0. Offsets are used
-	// to make sure Telegram knows we've handled previous values and we don't
-	// need them repeated.
-	updateConfig := tgbotapi.NewUpdate(0)
+	http.HandleFunc("/"+token, webHook)
+	http.ListenAndServe(":8443", nil)
+}
 
-	// Tell Telegram we should wait up to 30 seconds on each request for an
-	// update. This way we can get information just as quickly as making many
-	// frequent requests without having to send nearly as many.
-	updateConfig.Timeout = 30
-
-	// Start polling Telegram for updates.
-	updates := bot.GetUpdatesChan(updateConfig)
-
-	// Let's go through each update that we're getting from Telegram.
-	for update := range updates {
-		if update.InlineQuery != nil {
-			ProcessQuery(update)
-		} else if update.ChosenInlineResult != nil {
-			ProcessQueryResult(update)
-		} else if update.Message != nil {
-			if update.Message.IsCommand() {
-				ProcessCommand(update)
-			} else {
-				ProcessMessage(update)
-			}
-		} else if update.CallbackQuery != nil {
-			ProcessCallbackQuery(update)
-		}
-	}
+func webHook(w http.ResponseWriter, req *http.Request) {
+	log.Print(req.Body)
 }
 
 func PopulateUserMap() {
