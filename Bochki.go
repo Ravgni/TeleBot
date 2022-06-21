@@ -37,8 +37,8 @@ func main() {
 
 	UserMap = make(map[int64]*UserStatus)
 	PopulateUserMap()
-
 	token := os.Getenv("TELEGRAM_BOCHKI")
+	port := os.Getenv("PORT")
 	bot, err = tgbotapi.NewBotAPI(token)
 	if err != nil {
 		panic(err)
@@ -46,8 +46,46 @@ func main() {
 
 	bot.Debug = true
 
-	http.HandleFunc("/"+token, webHook)
-	http.ListenAndServe(":8443", nil)
+	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	wh, err := tgbotapi.NewWebhook("https://bochki-bot.herokuapp.com:443/" + bot.Token)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = bot.Request(wh)
+	if err != nil {
+		panic(err)
+	}
+
+	info, err := bot.GetWebhookInfo()
+	if err != nil {
+		panic(err)
+	}
+
+	if info.LastErrorDate != 0 {
+		log.Printf("failed to set webhook: %s", info.LastErrorMessage)
+	}
+
+	updates := bot.ListenForWebhook("/" + bot.Token)
+
+	go http.ListenAndServe(":"+port, nil)
+
+	for update := range updates {
+		if update.InlineQuery != nil {
+			ProcessQuery(update)
+		} else if update.ChosenInlineResult != nil {
+			ProcessQueryResult(update)
+		} else if update.Message != nil {
+			if update.Message.IsCommand() {
+				ProcessCommand(update)
+			} else {
+				ProcessMessage(update)
+			}
+		} else if update.CallbackQuery != nil {
+			ProcessCallbackQuery(update)
+		}
+	}
 }
 
 func webHook(w http.ResponseWriter, req *http.Request) {
