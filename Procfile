@@ -1,1 +1,1 @@
-web:  Bochki
+web:  bin/Bochki

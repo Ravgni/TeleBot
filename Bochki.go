@@ -63,7 +63,7 @@ func main() {
 		panic(err)
 	}
 
-	if info.LastErrorDate != 0 {
+	if !info.IsSet() && info.LastErrorDate != 0 {
 		log.Printf("failed to set webhook: %s", info.LastErrorMessage)
 	}
 
