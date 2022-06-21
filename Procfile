@@ -1,1 +1,1 @@
-worker:  bin/Bochki
+web:  Bochki

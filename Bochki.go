@@ -88,10 +88,6 @@ func main() {
 	}
 }
 
-func webHook(w http.ResponseWriter, req *http.Request) {
-	log.Print(req.Body)
-}
-
 func PopulateUserMap() {
 	var users []MongoUser
 	if cur, err := UserStatusC.Find(context.TODO(), bson.M{}); cur != nil && err == nil && cur.All(context.TODO(), &users) == nil {
