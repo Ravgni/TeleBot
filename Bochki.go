@@ -142,7 +142,7 @@ func ProcessQueryResult(update tgbotapi.Update) {
 func ProcessCommand(update tgbotapi.Update) {
 	from := update.Message.From
 	UserID := from.ID
-	var buttonRow []tgbotapi.InlineKeyboardButton
+	var buttonRow []tgbotapi.InlineKeyboardButton = nil
 	var reply string
 	switch update.Message.Command() {
 	case "start":
@@ -168,9 +168,8 @@ func ProcessCommand(update tgbotapi.Update) {
 		projectstage := bson.D{{Key: "$project", Value: bson.D{{Key: "_id", Value: 0}, {Key: "GameID", Value: "$Games._id"}, {Key: "Name", Value: "$Games.Name"}}}}
 
 		if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &games) == nil {
-			buttonRow = tgbotapi.NewInlineKeyboardRow()
 			for _, game := range games {
-				buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game[1].Value.(string), "G "+game[0].Value.(primitive.ObjectID).Hex()))
+				buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game[1].Value.(string), "I "+game[0].Value.(primitive.ObjectID).Hex()))
 			}
 		}
 		reply = "Виберіть існуючу гру або додайте нову"
@@ -180,18 +179,14 @@ func ProcessCommand(update tgbotapi.Update) {
 		for key, value := range *scores {
 			buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+key, "S "+value))
 		}
-		if len(*scores) > 0 {
+		if buttonRow != nil {
 			reply = "Виберіть гру"
 		} else {
 			reply = "Немає початих ігор"
 		}
 	}
 
-	if buttonRow != nil {
-		SendMessage(UserID, reply, tgbotapi.NewInlineKeyboardMarkup(buttonRow))
-	} else {
-		SendMessage(UserID, reply)
-	}
+	SendMessage(UserID, reply, tgbotapi.NewInlineKeyboardMarkup(buttonRow))
 }
 
 func ProcessMessage(update tgbotapi.Update) {
@@ -239,9 +234,8 @@ func SendInvite(fromName string, from int64, to int64) {
 func ProcessCallbackQuery(update tgbotapi.Update) {
 	from := update.CallbackQuery.From
 	data := update.CallbackQuery.Data
-	//TODO Regexp
 	switch data[0] {
-	case 'A':
+	case 'A': //Accept
 		toID, err := strconv.ParseInt(data[2:], 10, 0)
 		if err != nil {
 			panic(err)
@@ -249,13 +243,13 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 		var to MongoUser
 		UserStatusC.FindOne(context.TODO(), bson.M{"_id": toID}).Decode(&to)
 		AcceptInvite(from.ID, from.FirstName+" "+from.LastName, toID, to.Name, UserMap[toID].GameName)
-	case 'R':
+	case 'R': //Reject
 		ToID, err := strconv.ParseInt(data[2:], 10, 0)
 		if err != nil {
 			panic(err)
 		}
 		RejectInvite(from.FirstName+" "+from.LastName, ToID)
-	case 'G':
+	case 'I': //Invite
 		var game MongoGame
 		if ID, err := primitive.ObjectIDFromHex(data[2:]); err == nil && GameStateC.FindOne(context.TODO(), bson.M{"_id": ID}).Decode(&game) == nil {
 			user := UserMap[from.ID]
@@ -265,7 +259,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 
 			SendMessage(from.ID, "Додайте контакт")
 		}
-	case 'S':
+	case 'S': //Score
 		SendMessage(from.ID, data[2:])
 	}
 }
@@ -341,7 +335,6 @@ func UpdateScore(from int64, query string) string {
 		if User.Games == nil {
 			return "Не має початих ігор"
 		} else {
-			//TODO Bulk write
 			filter := bson.M{"_id": bson.M{"$in": User.Games}}
 			update := bson.M{
 				"$inc": bson.M{"Players.$[elem].Score": score},
@@ -384,13 +377,15 @@ func UpdateScore(from int64, query string) string {
 
 func GetScore(from int64) *map[string]string {
 	var User MongoUser
-	ret := make(map[string]string)
+	var ret map[string]string
+	var results []MongoGame
+
+	//TODO one query with lookup
 	if err = UserStatusC.FindOne(context.TODO(), bson.M{"_id": from}).Decode(&User); err == nil {
-		if cur, err := GameStateC.Find(context.TODO(), bson.M{"_id": bson.M{"$in": User.Games}}); cur != nil && err == nil {
-			var results []MongoGame
-			if err = cur.All(context.TODO(), &results); err == nil {
+		if cur, err := GameStateC.Find(context.TODO(), bson.M{"_id": bson.M{"$in": User.Games}}); err == nil && cur.All(context.TODO(), &results) == nil {
+			if resSize := len(results); resSize > 0 {
+				ret = make(map[string]string, resSize)
 				for _, result := range results {
-					log.Print(result)
 					var ResultMessage string
 					if result.TotalScore > 0 {
 						ResultMessage = "Лідер " + result.Leader + " з перевагою " + fmt.Sprint(result.TotalScore)
