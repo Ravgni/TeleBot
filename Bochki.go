@@ -209,7 +209,7 @@ func ProcessMessage(update tgbotapi.Update) {
 		}
 	} else if update.Message.ViaBot == nil && validResult.MatchString(update.Message.Text) {
 		reply = UpdateScore(From.ID, update.Message.Text)
-	} else if user, ok := UserMap[From.ID]; ok && user.GameNamePending {
+	} else if user, ok := UserMap[From.ID]; ok && user.GameNamePending && update.Message.Text != "" {
 		user.GameName = update.Message.Text
 		user.GameNamePending = false
 		user.ContactPending = true
@@ -372,24 +372,33 @@ func UpdateScore(from int64, query string) string {
 }
 
 func GetScore(from int64) *map[string]string {
-	var User MongoUser
 	var ret map[string]string
-	var results []MongoGame
+	var results []bson.D
 
-	//TODO one query with lookup
-	if err = UserStatusC.FindOne(context.TODO(), bson.M{"_id": from}).Decode(&User); err == nil {
-		if cur, err := GameStateC.Find(context.TODO(), bson.M{"_id": bson.M{"$in": User.Games}}); err == nil && cur.All(context.TODO(), &results) == nil {
-			if resSize := len(results); resSize > 0 {
-				ret = make(map[string]string, resSize)
-				for _, result := range results {
-					var ResultMessage string
-					if result.TotalScore > 0 {
-						ResultMessage = "Лідер " + result.Leader + " з перевагою " + fmt.Sprint(result.TotalScore)
-					} else {
-						ResultMessage = "Лідер відсутній"
-					}
-					ret[result.Name] = ResultMessage
+	matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": from}}}
+	unwindstage := bson.D{{Key: "$unwind", Value: "$Games"}}
+	lookupstage := bson.D{{Key: "$lookup", Value: bson.D{
+		{Key: "from", Value: "Games"},
+		{Key: "localField", Value: "Games"},
+		{Key: "foreignField", Value: "_id"},
+		{Key: "as", Value: "Games"}}}}
+	projectstage := bson.D{{Key: "$project", Value: bson.D{
+		{Key: "_id", Value: 0},
+		{Key: "Name", Value: "$Games.Name"},
+		{Key: "Leader", Value: "$Games.Leader"},
+		{Key: "TotalScore", Value: "$Games.TotalScore"}}}}
+
+	if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &results) == nil {
+		if resSize := len(results); resSize > 0 {
+			ret = make(map[string]string, resSize)
+			for _, result := range results {
+				var ResultMessage string
+				if result[2].Value.(uint) > 0 {
+					ResultMessage = "Лідер " + result[1].Value.(string) + " з перевагою " + fmt.Sprint(result[2].Value.(uint))
+				} else {
+					ResultMessage = "Лідер відсутній"
 				}
+				ret[result[0].Value.(string)] = ResultMessage
 			}
 		}
 	}
