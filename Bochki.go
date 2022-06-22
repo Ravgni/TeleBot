@@ -207,13 +207,9 @@ func ProcessMessage(update tgbotapi.Update) {
 			}
 			UserMap[From.ID].ContactPending = false
 		}
-	}
-
-	if update.Message.ViaBot == nil && validResult.MatchString(update.Message.Text) {
+	} else if update.Message.ViaBot == nil && validResult.MatchString(update.Message.Text) {
 		reply = UpdateScore(From.ID, update.Message.Text)
-	}
-
-	if user, ok := UserMap[From.ID]; ok && user.GameNamePending {
+	} else if user, ok := UserMap[From.ID]; ok && user.GameNamePending {
 		user.GameName = update.Message.Text
 		user.GameNamePending = false
 		user.ContactPending = true
@@ -222,7 +218,7 @@ func ProcessMessage(update tgbotapi.Update) {
 	SendMessage(update.Message.Chat.ID, reply)
 }
 
-func SendInvite(fromName string, from int64, to int64) {
+func SendInvite(fromName string, from, to int64) {
 	inlineMarkup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Прийняти", "A "+strconv.FormatInt(from, 10)),
@@ -264,7 +260,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 	}
 }
 
-func AcceptInvite(from int64, fromName string, to int64, toName string, gameName string) {
+func AcceptInvite(from int64, fromName string, to int64, toName, gameName string) {
 	SendMessage(to, "Гравець "+fromName+" прийняв запрошення на гру")
 
 	// TODO improve DB queries
