@@ -18,14 +18,14 @@ type MongoUser struct {
 type MongoPlayerScore struct {
 	Player     int64  `bson:"Player"`
 	PlayerName string `bson:"PlayerName"`
-	Score      uint   `bson:"Score"`
+	Score      int32  `bson:"Score, minsize"`
 	WordNum    uint   `bson:"WordNum"`
 }
 
 type MongoGame struct {
 	Players    []MongoPlayerScore `bson:"Players"`
 	Leader     string             `bson:"Leader"`
-	TotalScore uint               `bson:"TotalScore"`
+	TotalScore int32              `bson:"TotalScore, minsize"`
 	Name       string             `bson:"Name"`
 }
 

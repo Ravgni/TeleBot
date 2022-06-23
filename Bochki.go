@@ -156,20 +156,20 @@ func ProcessCommand(update tgbotapi.Update) {
 	case "invite":
 		UserMap[UserID].GameNamePending = true
 
-		var games []bson.D
+		var games []bson.M
 
 		matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": UserID}}}
 		unwindstage := bson.D{{Key: "$unwind", Value: "$Games"}}
-		lookupstage := bson.D{{Key: "$lookup", Value: bson.D{
-			{Key: "from", Value: "Games"},
-			{Key: "localField", Value: "Games"},
-			{Key: "foreignField", Value: "_id"},
-			{Key: "as", Value: "Games"}}}}
-		projectstage := bson.D{{Key: "$project", Value: bson.D{{Key: "_id", Value: 0}, {Key: "GameID", Value: "$Games._id"}, {Key: "Name", Value: "$Games.Name"}}}}
+		lookupstage := bson.D{{Key: "$lookup", Value: bson.M{
+			"from":         "Games",
+			"localField":   "Games",
+			"foreignField": "_id",
+			"as":           "Games"}}}
+		projectstage := bson.D{{Key: "$project", Value: bson.M{"_id": 0, "GameID": "$Games._id", "Name": "$Games.Name"}}}
 
 		if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &games) == nil {
 			for _, game := range games {
-				buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game[1].Value.(string), "I "+game[0].Value.(primitive.ObjectID).Hex()))
+				buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game["Name"].(string), "I "+game["GameID"].(primitive.ObjectID).Hex()))
 			}
 		}
 		reply = "Виберіть існуючу гру або додайте нову"
@@ -373,32 +373,32 @@ func UpdateScore(from int64, query string) string {
 
 func GetScore(from int64) *map[string]string {
 	var ret map[string]string
-	var results []bson.D
+	var results []bson.M
 
 	matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": from}}}
 	unwindstage := bson.D{{Key: "$unwind", Value: "$Games"}}
-	lookupstage := bson.D{{Key: "$lookup", Value: bson.D{
-		{Key: "from", Value: "Games"},
-		{Key: "localField", Value: "Games"},
-		{Key: "foreignField", Value: "_id"},
-		{Key: "as", Value: "Games"}}}}
-	projectstage := bson.D{{Key: "$project", Value: bson.D{
-		{Key: "_id", Value: 0},
-		{Key: "Name", Value: "$Games.Name"},
-		{Key: "Leader", Value: "$Games.Leader"},
-		{Key: "TotalScore", Value: "$Games.TotalScore"}}}}
+	lookupstage := bson.D{{Key: "$lookup", Value: bson.M{
+		"from":         "Games",
+		"localField":   "Games",
+		"foreignField": "_id",
+		"as":           "Games"}}}
+	projectstage := bson.D{{Key: "$project", Value: bson.M{
+		"_id":        0,
+		"Name":       "$Games.Name",
+		"Leader":     "$Games.Leader",
+		"TotalScore": "$Games.TotalScore"}}}
 
 	if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &results) == nil {
 		if resSize := len(results); resSize > 0 {
 			ret = make(map[string]string, resSize)
 			for _, result := range results {
 				var ResultMessage string
-				if result[2].Value.(uint) > 0 {
-					ResultMessage = "Лідер " + result[1].Value.(string) + " з перевагою " + fmt.Sprint(result[2].Value.(uint))
+				if result["TotalScore"].(int64) > 0 {
+					ResultMessage = "Лідер " + result["Leader"].(string) + " з перевагою " + fmt.Sprint(result["TotalScore"])
 				} else {
 					ResultMessage = "Лідер відсутній"
 				}
-				ret[result[0].Value.(string)] = ResultMessage
+				ret[result["Name"].(string)] = ResultMessage
 			}
 		}
 	}
