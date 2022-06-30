@@ -21,9 +21,8 @@ var validResult = regexp.MustCompile(`(?s)СЛОВКО [\d]*.*./6.*https://slovk
 var findWord = regexp.MustCompile(`[0-9]+`)
 var findResult = regexp.MustCompile(`./6`)
 var bot *tgbotapi.BotAPI
-var err error
 var UserStatusC, GameStateC *mongo.Collection
-var UserMap map[int64]*UserStatus
+var UserMap = make(map[int64]*UserStatus)
 
 func main() {
 	client, ctx := ConnectDB()
@@ -35,10 +34,10 @@ func main() {
 	UserStatusC = client.Database("BochkiDB").Collection("UserStatus")
 	GameStateC = client.Database("BochkiDB").Collection("Games")
 
-	UserMap = make(map[int64]*UserStatus)
-	PopulateUserMap()
 	token := os.Getenv("TELEGRAM_BOCHKI")
 	port := os.Getenv("PORT")
+
+	var err error
 	bot, err = tgbotapi.NewBotAPI(token)
 	if err != nil {
 		panic(err)
@@ -88,12 +87,19 @@ func main() {
 	}
 }
 
-func PopulateUserMap() {
-	var users []MongoUser
-	if cur, err := UserStatusC.Find(context.TODO(), bson.M{}); cur != nil && err == nil && cur.All(context.TODO(), &users) == nil {
-		for _, user := range users {
-			UserMap[user.ID] = &UserStatus{UserID: user.ID}
+func GetUserStatus(ID int64) (*UserStatus, error) {
+	if userStatus, ok := UserMap[ID]; !ok {
+		if res := UserStatusC.FindOne(context.TODO(), bson.M{"_id": ID}); res.Err() == nil {
+			userStatus = &UserStatus{UserID: ID}
+			UserMap[ID] = userStatus
+			return userStatus, nil
+		} else if res.Err() == mongo.ErrNoDocuments {
+			return nil, ErrStartBot
+		} else {
+			return nil, ErrGeneriс
 		}
+	} else {
+		return userStatus, nil
 	}
 }
 
@@ -106,9 +112,7 @@ func ProcessQuery(update tgbotapi.Update) {
 			article.Description = "Показати рахунок"
 			options = append(options, article)
 		}
-	}
-
-	if validResult.MatchString(update.InlineQuery.Query) {
+	} else if validResult.MatchString(update.InlineQuery.Query) {
 		article1 := tgbotapi.NewInlineQueryResultArticle(uuid.New().String()+"U", "Додати", update.InlineQuery.Query)
 		article1.Description = "Додати словко"
 		options = append(options, article1)
@@ -122,7 +126,7 @@ func ProcessQuery(update tgbotapi.Update) {
 			Results:       options,
 		}
 
-		if _, err = bot.Request(inlineConf); err != nil {
+		if _, err := bot.Request(inlineConf); err != nil {
 			log.Println(err)
 		}
 	}
@@ -153,26 +157,31 @@ func ProcessCommand(update tgbotapi.Update) {
 			log.Print(insertErr)
 		}
 		UserMap[UserID] = &UserStatus{UserID: UserID}
+		reply = "Тепер ви можете створити нову гру або долучитися до існуючої"
 	case "invite":
-		UserMap[UserID].GameNamePending = true
+		if status, err := GetUserStatus(UserID); err == nil {
+			status.GameNamePending = true
 
-		var games []bson.M
+			var games []bson.M
 
-		matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": UserID}}}
-		unwindstage := bson.D{{Key: "$unwind", Value: "$Games"}}
-		lookupstage := bson.D{{Key: "$lookup", Value: bson.M{
-			"from":         "Games",
-			"localField":   "Games",
-			"foreignField": "_id",
-			"as":           "Games"}}}
-		projectstage := bson.D{{Key: "$project", Value: bson.M{"_id": 0, "GameID": "$Games._id", "Name": "$Games.Name"}}}
+			matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": UserID}}}
+			unwindstage := bson.D{{Key: "$unwind", Value: "$Games"}}
+			lookupstage := bson.D{{Key: "$lookup", Value: bson.M{
+				"from":         "Games",
+				"localField":   "Games",
+				"foreignField": "_id",
+				"as":           "Games"}}}
+			projectstage := bson.D{{Key: "$project", Value: bson.M{"_id": 0, "GameID": "$Games._id", "Name": "$Games.Name"}}}
 
-		if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &games) == nil {
-			for _, game := range games {
-				buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game["Name"].(string), "I "+game["GameID"].(primitive.ObjectID).Hex()))
+			if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &games) == nil {
+				for _, game := range games {
+					buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game["Name"].(string), "I "+game["GameID"].(primitive.ObjectID).Hex()))
+				}
 			}
+			reply = "Виберіть існуючу гру або додайте нову"
+		} else {
+			reply = err.Error()
 		}
-		reply = "Виберіть існуючу гру або додайте нову"
 
 	case "score":
 		scores := GetScore(UserID)
@@ -194,26 +203,34 @@ func ProcessMessage(update tgbotapi.Update) {
 	From := update.Message.From
 
 	if To := update.Message.Contact; To != nil {
-		if !UserMap[From.ID].ContactPending {
-			reply = "Спочатку викличте команду /invite"
-		} else {
-			if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": To.UserID}).Err(); err != nil {
-				if err == mongo.ErrNoDocuments {
-					reply = "Контакт не звертався до бота"
-				}
+		if status, err := GetUserStatus(To.UserID); err == nil {
+			if !status.ContactPending {
+				reply = "Спочатку викличте команду /invite"
 			} else {
-				SendInvite(From.FirstName+" "+From.LastName, From.ID, To.UserID)
-				reply = "Запрошення відправлено"
+				if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": To.UserID}).Err(); err != nil {
+					if err == mongo.ErrNoDocuments {
+						reply = "Контакт не звертався до бота"
+					}
+				} else {
+					SendInvite(From.FirstName+" "+From.LastName, From.ID, To.UserID)
+					reply = "Запрошення відправлено"
+				}
+				status.ContactPending = false
 			}
-			UserMap[From.ID].ContactPending = false
+		} else {
+			reply = err.Error()
 		}
 	} else if update.Message.ViaBot == nil && validResult.MatchString(update.Message.Text) {
 		reply = UpdateScore(From.ID, update.Message.Text)
-	} else if user, ok := UserMap[From.ID]; ok && user.GameNamePending && update.Message.Text != "" {
-		user.GameName = update.Message.Text
-		user.GameNamePending = false
-		user.ContactPending = true
-		reply = "Додайте контакт"
+	} else if update.Message.Text != "" {
+		if user, err := GetUserStatus(To.UserID); err == nil && user.GameNamePending {
+			user.GameName = update.Message.Text
+			user.GameNamePending = false
+			user.ContactPending = true
+			reply = "Додайте контакт"
+		} else {
+			reply = err.Error()
+		}
 	}
 	SendMessage(update.Message.Chat.ID, reply)
 }
@@ -248,7 +265,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 	case 'I': //Invite
 		var game MongoGame
 		if ID, err := primitive.ObjectIDFromHex(data[2:]); err == nil && GameStateC.FindOne(context.TODO(), bson.M{"_id": ID}).Decode(&game) == nil {
-			user := UserMap[from.ID]
+			user, _ := GetUserStatus(from.ID)
 			user.GameName = game.Name
 			user.GameNamePending = false
 			user.ContactPending = true
@@ -323,9 +340,9 @@ func UpdateScore(from int64, query string) string {
 	var User MongoUser
 	if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": from}).Decode(&User); err != nil {
 		if err == mongo.ErrNoDocuments {
-			return "Спочатку ініціюйте бота (/start)"
+			return ErrStartBot.Error()
 		} else {
-			return "Помилка"
+			return ErrGeneriс.Error()
 		}
 	} else {
 		if User.Games == nil {
@@ -365,7 +382,7 @@ func UpdateScore(from int64, query string) string {
 			if cur, err := GameStateC.Aggregate(context.TODO(), pipeline); cur != nil && err == nil {
 				return "Словко додано до рахунку"
 			} else {
-				return "Помилка"
+				return ErrGeneriс.Error()
 			}
 		}
 	}
@@ -393,7 +410,7 @@ func GetScore(from int64) *map[string]string {
 			ret = make(map[string]string, resSize)
 			for _, result := range results {
 				var ResultMessage string
-				if result["TotalScore"].(int64) > 0 {
+				if result["TotalScore"].(int32) > 0 {
 					ResultMessage = "Лідер " + result["Leader"].(string) + " з перевагою " + fmt.Sprint(result["TotalScore"])
 				} else {
 					ResultMessage = "Лідер відсутній"
@@ -401,8 +418,7 @@ func GetScore(from int64) *map[string]string {
 				ret[result["Name"].(string)] = ResultMessage
 			}
 		}
-	}
-	if err != nil {
+	} else if err != nil {
 		log.Print(err)
 	}
 	return &ret
