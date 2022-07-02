@@ -96,7 +96,7 @@ func GetUserStatus(ID int64) (*UserStatus, error) {
 		} else if res.Err() == mongo.ErrNoDocuments {
 			return nil, ErrStartBot
 		} else {
-			return nil, ErrGeneriс
+			return nil, ErrGeneric
 		}
 	} else {
 		return userStatus, nil
@@ -342,7 +342,7 @@ func UpdateScore(from int64, query string) string {
 		if err == mongo.ErrNoDocuments {
 			return ErrStartBot.Error()
 		} else {
-			return ErrGeneriс.Error()
+			return ErrGeneric.Error()
 		}
 	} else {
 		if User.Games == nil {
@@ -382,7 +382,7 @@ func UpdateScore(from int64, query string) string {
 			if cur, err := GameStateC.Aggregate(context.TODO(), pipeline); cur != nil && err == nil {
 				return "Словко додано до рахунку"
 			} else {
-				return ErrGeneriс.Error()
+				return ErrGeneric.Error()
 			}
 		}
 	}
