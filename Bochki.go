@@ -359,13 +359,8 @@ func UpdateScore(from int64, query string) string {
 			playerscore1 := BsonArrayValAt("Players", 1, "Score")
 
 			matchstage := bson.D{{Key: "$match", Value: bson.D{{Key: "_id", Value: bson.M{"$in": User.Games}}}}}
-
-			sortstage := bson.D{{Key: "$project", Value: bson.M{
-				"_id":        1,
-				"Players":    bson.M{"$sortArray": bson.M{"input": "$Players", "sortBy": bson.M{"Score": -1}}},
-				"Leader":     1,
-				"TotalScore": 1}}}
-
+			sortstage := bson.D{{Key: "$addFields", Value: bson.M{
+				"Players": bson.M{"$sortArray": bson.M{"input": "$Players", "sortBy": bson.M{"Score": -1}}}}}}
 			setleaderstage := bson.D{{Key: "$set", Value: bson.M{
 				"Leader": bson.M{"$cond": bson.M{
 					"if":   bson.M{"$gt": bson.A{playerscore0, playerscore1}},
