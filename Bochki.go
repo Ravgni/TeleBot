@@ -359,14 +359,13 @@ func UpdateScore(from int64, query string) string {
 			playerscore1 := BsonArrayValAt("Players", 1, "Score")
 
 			matchstage := bson.D{{Key: "$match", Value: bson.D{{Key: "_id", Value: bson.M{"$in": User.Games}}}}}
-			//TODO switch to sortArray when Atlas ver >= 5.2
-			unwindstage := bson.D{{Key: "$unwind", Value: "$Players"}}
-			sortstage := bson.D{{Key: "$sort", Value: bson.M{"_id": 1, "Players.Score": -1}}}
-			groupstage := bson.D{{Key: "$group", Value: bson.M{
-				"_id":        "$_id",
-				"Players":    bson.M{"$push": "$Players"},
-				"Leader":     bson.M{"$first": "$Leader"},
-				"TotalScore": bson.M{"$first": "$TotalScore"}}}}
+
+			sortstage := bson.D{{Key: "$project", Value: bson.M{
+				"_id":        1,
+				"Players":    bson.M{"$sortArray": bson.M{"input": "$Players", "sortBy": bson.M{"Score": -1}}},
+				"Leader":     1,
+				"TotalScore": 1}}}
+
 			setleaderstage := bson.D{{Key: "$set", Value: bson.M{
 				"Leader": bson.M{"$cond": bson.M{
 					"if":   bson.M{"$gt": bson.A{playerscore0, playerscore1}},
@@ -378,7 +377,7 @@ func UpdateScore(from int64, query string) string {
 					"else": 0}}}}}
 			mergestage := bson.D{{Key: "$merge", Value: bson.M{"into": "Games", "on": "_id", "whenMatched": "merge", "whenNotMatched": "discard"}}}
 
-			pipeline := mongo.Pipeline{matchstage, unwindstage, sortstage, groupstage, setleaderstage, mergestage}
+			pipeline := mongo.Pipeline{matchstage, sortstage, setleaderstage, mergestage}
 			if cur, err := GameStateC.Aggregate(context.TODO(), pipeline); cur != nil && err == nil {
 				return "Словко додано до рахунку"
 			} else {
