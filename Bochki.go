@@ -93,8 +93,6 @@ func GetUserStatus(ID int64) (*UserStatus, error) {
 			userStatus = &UserStatus{UserID: ID}
 			UserMap[ID] = userStatus
 			return userStatus, nil
-		} else if res.Err() == mongo.ErrNoDocuments {
-			return nil, ErrStartBot
 		} else {
 			return nil, ErrGeneric
 		}
@@ -339,11 +337,7 @@ func UpdateScore(from int64, query string) string {
 
 	var User MongoUser
 	if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": from}).Decode(&User); err != nil {
-		if err == mongo.ErrNoDocuments {
-			return ErrStartBot.Error()
-		} else {
-			return ErrGeneric.Error()
-		}
+		return ErrGeneric.Error()
 	} else {
 		if User.Games == nil {
 			return "Не має початих ігор"
