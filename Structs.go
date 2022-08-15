@@ -28,12 +28,3 @@ type MongoGame struct {
 	TotalScore uint32             `bson:"TotalScore,minsize"`
 	Name       string             `bson:"Name"`
 }
-
-type InviteQuery struct {
-	Name string
-	ID   int64
-}
-
-type GameQuery struct {
-	Name string
-}
