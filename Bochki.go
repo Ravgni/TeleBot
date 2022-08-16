@@ -107,49 +107,6 @@ func main() {
 
 	// Idle, to keep updates coming in, and avoid bot stopping.
 	updater.Idle()
-
-	// bot.Debug = true
-
-	// log.Printf("Authorized on account %s", bot.Self.UserName)
-
-	// wh, err := tgbotapi.NewWebhook("https://bochki-bot.herokuapp.com:443/" + bot.Token)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// _, err = bot.Request(wh)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// info, err := bot.GetWebhookInfo()
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// if !info.IsSet() && info.LastErrorDate != 0 {
-	// 	log.Printf("failed to set webhook: %s", info.LastErrorMessage)
-	// }
-
-	// updates := bot.ListenForWebhook("/" + bot.Token)
-
-	// go http.ListenAndServe(":"+port, nil)
-
-	// for update := range updates {
-	// 	if update.InlineQuery != nil {
-	// 		ProcessQuery(update)
-	// 	} else if update.ChosenInlineResult != nil {
-	// 		ProcessQueryResult(update)
-	// 	} else if update.Message != nil {
-	// 		if update.Message.IsCommand() {
-	// 			ProcessCommand(update)
-	// 		} else {
-	// 			ProcessMessage(update)
-	// 		}
-	// 	} else if update.CallbackQuery != nil {
-	// 		ProcessCallbackQuery(update)
-	// 	}
-	// }
 }
 
 func GetUserStatus(ID int64) (*UserStatus, error) {
@@ -210,7 +167,7 @@ func ProcessCommand(b *gotgbot.Bot, ctx *ext.Context) error {
 	var buttonRow []gotgbot.InlineKeyboardButton = nil
 	var reply string
 	switch ctx.Message.Text {
-	case "start":
+	case "/start":
 		filter := bson.M{"_id": UserID}
 		update := bson.M{"$setOnInsert": MongoUser{ID: UserID, Name: from.FirstName + " " + from.LastName, Games: []primitive.ObjectID{}}}
 		opts := options.Update().SetUpsert(true)
@@ -219,7 +176,7 @@ func ProcessCommand(b *gotgbot.Bot, ctx *ext.Context) error {
 		}
 		UserMap[UserID] = &UserStatus{UserID: UserID}
 		reply = "Тепер ви можете створити нову гру або долучитися до існуючої"
-	case "invite":
+	case "/invite":
 		if status, err := GetUserStatus(UserID); err == nil {
 			status.GameNamePending = true
 
@@ -244,7 +201,7 @@ func ProcessCommand(b *gotgbot.Bot, ctx *ext.Context) error {
 			reply = err.Error()
 		}
 
-	case "score":
+	case "/score":
 		scores := GetScore(UserID)
 		for key, value := range *scores {
 			buttonRow = append(buttonRow, NewInlineKeyboardButton("Гра "+key, "S "+value))
