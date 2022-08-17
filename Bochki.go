@@ -150,13 +150,13 @@ func ProcessQuery(b *gotgbot.Bot, ctx *ext.Context) error {
 
 func ProcessQueryResult(b *gotgbot.Bot, ctx *ext.Context) error {
 	var reply string
-	query := ctx.ChosenInlineResult.Query
-	switch ctx.ChosenInlineResult.ResultId[len(ctx.ChosenInlineResult.ResultId)-1] {
+	result := ctx.ChosenInlineResult
+	switch result.ResultId[len(result.ResultId)-1] {
 	case 'U':
-		reply = UpdateScore(ctx.ChosenInlineResult.From.Id, query)
+		reply = UpdateScore(result.From.Id, result.Query)
 	}
 
-	SendMessage(ctx.ChosenInlineResult.From.Id, reply)
+	SendMessage(result.From.Id, reply)
 
 	return nil
 }
