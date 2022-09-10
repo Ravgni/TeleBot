@@ -31,8 +31,8 @@ var UserStatusC, GameStateC *mongo.Collection
 var UserMap = make(map[int64]*UserStatus)
 
 func main() {
-	client, ctx := ConnectDB()
-	defer client.Disconnect(ctx)
+	client, ctx, cancel := ConnectDB()
+	defer CloseConnection(client, ctx, cancel)
 
 	/*
 	 Get my collection instance

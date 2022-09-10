@@ -11,18 +11,23 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func ConnectDB() (*mongo.Client, context.Context) {
+func ConnectDB() (*mongo.Client, context.Context, context.CancelFunc) {
 	client, err := mongo.NewClient(options.Client().ApplyURI(os.Getenv("MONGODB_URI")))
 	if err != nil {
 		log.Fatal(err)
 	}
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	err = client.Connect(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	return client, ctx
+	return client, ctx, cancel
+}
+
+func CloseConnection(client *mongo.Client, ctx context.Context, cancel context.CancelFunc) {
+	client.Disconnect(ctx)
+	cancel()
 }
 
 func BsonArrayValAt(arr string, idx uint, val string) bson.M {
