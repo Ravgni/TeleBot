@@ -9,7 +9,13 @@ import (
 	"regexp"
 	"strconv"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/PaulSonOfLars/gotgbot/v2"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/callbackquery"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/choseninlineresult"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/inlinequery"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/message"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -20,13 +26,13 @@ import (
 var validResult = regexp.MustCompile(`(?s)СЛОВКО [\d]*.*./6.*https://slovko.zaxid.net/`)
 var findWord = regexp.MustCompile(`[0-9]+`)
 var findResult = regexp.MustCompile(`./6`)
-var bot *tgbotapi.BotAPI
+var bot *gotgbot.Bot
 var UserStatusC, GameStateC *mongo.Collection
 var UserMap = make(map[int64]*UserStatus)
 
 func main() {
-	client, ctx := ConnectDB()
-	defer client.Disconnect(ctx)
+	client, ctx, cancel := ConnectDB()
+	defer CloseConnection(client, ctx, cancel)
 
 	/*
 	 Get my collection instance
@@ -35,56 +41,72 @@ func main() {
 	GameStateC = client.Database("BochkiDB").Collection("Games")
 
 	token := os.Getenv("TELEGRAM_BOCHKI")
-	port := os.Getenv("PORT")
+	port, _ := strconv.Atoi(os.Getenv("PORT"))
+	webhookDomain := os.Getenv("WEBHOOK_DOMAIN")
+	webhookSecret := os.Getenv("WEBHOOK_SECRET")
 
 	var err error
-	bot, err = tgbotapi.NewBotAPI(token)
+	bot, err = gotgbot.NewBot(token, &gotgbot.BotOpts{
+		Client: http.Client{},
+		DefaultRequestOpts: &gotgbot.RequestOpts{
+			Timeout: gotgbot.DefaultTimeout,
+			APIURL:  gotgbot.DefaultAPIURL,
+		},
+	})
 	if err != nil {
 		panic(err)
 	}
 
-	bot.Debug = true
+	// Create updater and dispatcher.
+	updater := ext.NewUpdater(&ext.UpdaterOpts{
+		ErrorLog: nil,
+		DispatcherOpts: ext.DispatcherOpts{
+			// If an error is returned by a handler, log it and continue going.
+			Error: func(b *gotgbot.Bot, ctx *ext.Context, err error) ext.DispatcherAction {
+				fmt.Println("an error occurred while handling update:", err.Error())
+				return ext.DispatcherActionNoop
+			},
+			MaxRoutines: ext.DefaultMaxRoutines,
+		},
+	})
+	dispatcher := updater.Dispatcher
 
-	log.Printf("Authorized on account %s", bot.Self.UserName)
+	dispatcher.AddHandler(handlers.NewInlineQuery(inlinequery.All, ProcessQuery))
+	dispatcher.AddHandler(handlers.NewChosenInlineResult(choseninlineresult.All, ProcessQueryResult))
+	dispatcher.AddHandler(handlers.NewMessage(message.Command, ProcessCommand))
+	dispatcher.AddHandler(handlers.NewMessage(message.Text, ProcessMessage))
+	dispatcher.AddHandler(handlers.NewCallback(callbackquery.All, ProcessCallbackQuery))
 
-	wh, err := tgbotapi.NewWebhook("https://bochki-bot.herokuapp.com:443/" + bot.Token)
+	// Start the webhook server. We start the server before we set the webhook itself, so that when telegram starts
+	// sending updates, the server is already ready.
+	webhookOpts := ext.WebhookOpts{
+		Listen:      "0.0.0.0", // This example assumes you're in a dev environment running ngrok on 8080.
+		Port:        port,
+		URLPath:     token,         // Using a secret (like the token) as the endpoint ensure that strangers aren't crafting fake updates.
+		SecretToken: webhookSecret, // Setting a webhook secret (must be here AND in SetWebhook!) ensures that the webhook is set by you.
+	}
+	err = updater.StartWebhook(bot, webhookOpts)
 	if err != nil {
-		panic(err)
+		panic("failed to start webhook: " + err.Error())
 	}
 
-	_, err = bot.Request(wh)
+	// Get the full webhook URL that we are expecting to receive updates at.
+	webhookURL := webhookOpts.GetWebhookURL(webhookDomain)
+
+	// Tell telegram where they should send updates for you to receive them in a secure manner.
+	_, err = bot.SetWebhook(webhookURL, &gotgbot.SetWebhookOpts{
+		MaxConnections:     100,
+		DropPendingUpdates: true,
+		SecretToken:        webhookSecret, // The secret token passed at webhook start time.
+	})
 	if err != nil {
-		panic(err)
+		panic("failed to set webhook: " + err.Error())
 	}
 
-	info, err := bot.GetWebhookInfo()
-	if err != nil {
-		panic(err)
-	}
+	fmt.Printf("%s has been started...\n", bot.User.Username)
 
-	if !info.IsSet() && info.LastErrorDate != 0 {
-		log.Printf("failed to set webhook: %s", info.LastErrorMessage)
-	}
-
-	updates := bot.ListenForWebhook("/" + bot.Token)
-
-	go http.ListenAndServe(":"+port, nil)
-
-	for update := range updates {
-		if update.InlineQuery != nil {
-			ProcessQuery(update)
-		} else if update.ChosenInlineResult != nil {
-			ProcessQueryResult(update)
-		} else if update.Message != nil {
-			if update.Message.IsCommand() {
-				ProcessCommand(update)
-			} else {
-				ProcessMessage(update)
-			}
-		} else if update.CallbackQuery != nil {
-			ProcessCallbackQuery(update)
-		}
-	}
+	// Idle, to keep updates coming in, and avoid bot stopping.
+	updater.Idle()
 }
 
 func GetUserStatus(ID int64) (*UserStatus, error) {
@@ -93,8 +115,6 @@ func GetUserStatus(ID int64) (*UserStatus, error) {
 			userStatus = &UserStatus{UserID: ID}
 			UserMap[ID] = userStatus
 			return userStatus, nil
-		} else if res.Err() == mongo.ErrNoDocuments {
-			return nil, ErrStartBot
 		} else {
 			return nil, ErrGeneric
 		}
@@ -103,53 +123,51 @@ func GetUserStatus(ID int64) (*UserStatus, error) {
 	}
 }
 
-func ProcessQuery(update tgbotapi.Update) {
-	var options []interface{}
+func ProcessQuery(b *gotgbot.Bot, ctx *ext.Context) error {
+	var results []gotgbot.InlineQueryResult
 
-	if update.InlineQuery.Query == "Рахунок" {
-		for key, value := range *GetScore(update.InlineQuery.From.ID) {
-			article := tgbotapi.NewInlineQueryResultArticle(uuid.New().String(), "Рахунок "+key, value)
+	if ctx.InlineQuery.Query == "Рахунок" {
+		for key, value := range *GetScore(ctx.InlineQuery.From.Id) {
+			article := NewInlineQueryResultArticle(uuid.New().String(), "Рахунок "+key, value)
 			article.Description = "Показати рахунок"
-			options = append(options, article)
+			results = append(results, article)
 		}
-	} else if validResult.MatchString(update.InlineQuery.Query) {
-		article1 := tgbotapi.NewInlineQueryResultArticle(uuid.New().String()+"U", "Додати", update.InlineQuery.Query)
+	} else if validResult.MatchString(ctx.InlineQuery.Query) {
+		article1 := NewInlineQueryResultArticle(uuid.New().String()+"U", "Додати", ctx.InlineQuery.Query)
 		article1.Description = "Додати словко"
-		options = append(options, article1)
+		results = append(results, article1)
 	}
 
-	if options != nil {
-		inlineConf := tgbotapi.InlineConfig{
-			InlineQueryID: update.InlineQuery.ID,
-			IsPersonal:    true,
-			CacheTime:     0,
-			Results:       options,
-		}
-
-		if _, err := bot.Request(inlineConf); err != nil {
+	if results != nil {
+		opts := gotgbot.AnswerInlineQueryOpts{CacheTime: 0, IsPersonal: true}
+		if _, err := ctx.InlineQuery.Answer(b, results, &opts); err != nil {
 			log.Println(err)
 		}
 	}
+
+	return nil
 }
 
-func ProcessQueryResult(update tgbotapi.Update) {
+func ProcessQueryResult(b *gotgbot.Bot, ctx *ext.Context) error {
 	var reply string
-	query := update.ChosenInlineResult.Query
-	switch update.ChosenInlineResult.ResultID[len(update.ChosenInlineResult.ResultID)-1] {
+	result := ctx.ChosenInlineResult
+	switch result.ResultId[len(result.ResultId)-1] {
 	case 'U':
-		reply = UpdateScore(update.ChosenInlineResult.From.ID, query)
+		reply = UpdateScore(result.From.Id, result.Query)
 	}
 
-	SendMessage(update.ChosenInlineResult.From.ID, reply)
+	SendMessage(result.From.Id, reply)
+
+	return nil
 }
 
-func ProcessCommand(update tgbotapi.Update) {
-	from := update.Message.From
-	UserID := from.ID
-	var buttonRow []tgbotapi.InlineKeyboardButton = nil
+func ProcessCommand(b *gotgbot.Bot, ctx *ext.Context) error {
+	from := ctx.Message.From
+	UserID := from.Id
+	var buttonRow []gotgbot.InlineKeyboardButton = nil
 	var reply string
-	switch update.Message.Command() {
-	case "start":
+	switch ctx.Message.Text {
+	case "/start":
 		filter := bson.M{"_id": UserID}
 		update := bson.M{"$setOnInsert": MongoUser{ID: UserID, Name: from.FirstName + " " + from.LastName, Games: []primitive.ObjectID{}}}
 		opts := options.Update().SetUpsert(true)
@@ -158,7 +176,7 @@ func ProcessCommand(update tgbotapi.Update) {
 		}
 		UserMap[UserID] = &UserStatus{UserID: UserID}
 		reply = "Тепер ви можете створити нову гру або долучитися до існуючої"
-	case "invite":
+	case "/invite":
 		if status, err := GetUserStatus(UserID); err == nil {
 			status.GameNamePending = true
 
@@ -175,7 +193,7 @@ func ProcessCommand(update tgbotapi.Update) {
 
 			if cur, err := UserStatusC.Aggregate(context.TODO(), mongo.Pipeline{matchstage, lookupstage, unwindstage, projectstage}); err == nil && cur.All(context.TODO(), &games) == nil {
 				for _, game := range games {
-					buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+game["Name"].(string), "I "+game["GameID"].(primitive.ObjectID).Hex()))
+					buttonRow = append(buttonRow, NewInlineKeyboardButton("Гра "+game["Name"].(string), "I "+game["GameID"].(primitive.ObjectID).Hex()))
 				}
 			}
 			reply = "Виберіть існуючу гру або додайте нову"
@@ -183,10 +201,10 @@ func ProcessCommand(update tgbotapi.Update) {
 			reply = err.Error()
 		}
 
-	case "score":
+	case "/score":
 		scores := GetScore(UserID)
 		for key, value := range *scores {
-			buttonRow = append(buttonRow, tgbotapi.NewInlineKeyboardButtonData("Гра "+key, "S "+value))
+			buttonRow = append(buttonRow, NewInlineKeyboardButton("Гра "+key, "S "+value))
 		}
 		if buttonRow != nil {
 			reply = "Виберіть гру"
@@ -195,24 +213,26 @@ func ProcessCommand(update tgbotapi.Update) {
 		}
 	}
 
-	SendMessage(UserID, reply, tgbotapi.NewInlineKeyboardMarkup(buttonRow))
+	SendMessage(UserID, reply, NewInlineKeyboardMarkup(buttonRow))
+
+	return nil
 }
 
-func ProcessMessage(update tgbotapi.Update) {
+func ProcessMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 	var reply string
-	From := update.Message.From
+	From := ctx.Message.From
 
-	if To := update.Message.Contact; To != nil {
-		if status, err := GetUserStatus(To.UserID); err == nil {
+	if To := ctx.Message.Contact; To != nil {
+		if status, err := GetUserStatus(To.UserId); err == nil {
 			if !status.ContactPending {
 				reply = "Спочатку викличте команду /invite"
 			} else {
-				if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": To.UserID}).Err(); err != nil {
+				if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": To.UserId}).Err(); err != nil {
 					if err == mongo.ErrNoDocuments {
 						reply = "Контакт не звертався до бота"
 					}
 				} else {
-					SendInvite(From.FirstName+" "+From.LastName, From.ID, To.UserID)
+					SendInvite(From.FirstName+" "+From.LastName, From.Id, To.UserId)
 					reply = "Запрошення відправлено"
 				}
 				status.ContactPending = false
@@ -220,11 +240,11 @@ func ProcessMessage(update tgbotapi.Update) {
 		} else {
 			reply = err.Error()
 		}
-	} else if update.Message.ViaBot == nil && validResult.MatchString(update.Message.Text) {
-		reply = UpdateScore(From.ID, update.Message.Text)
-	} else if update.Message.Text != "" {
-		if user, err := GetUserStatus(To.UserID); err == nil && user.GameNamePending {
-			user.GameName = update.Message.Text
+	} else if ctx.Message.ViaBot == nil && validResult.MatchString(ctx.Message.Text) {
+		reply = UpdateScore(From.Id, ctx.Message.Text)
+	} else if ctx.Message.Text != "" {
+		if user, err := GetUserStatus(To.UserId); err == nil && user.GameNamePending {
+			user.GameName = ctx.Message.Text
 			user.GameNamePending = false
 			user.ContactPending = true
 			reply = "Додайте контакт"
@@ -232,21 +252,23 @@ func ProcessMessage(update tgbotapi.Update) {
 			reply = err.Error()
 		}
 	}
-	SendMessage(update.Message.Chat.ID, reply)
+	SendMessage(ctx.Message.Chat.Id, reply)
+
+	return nil
 }
 
 func SendInvite(fromName string, from, to int64) {
-	inlineMarkup := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Прийняти", "A "+strconv.FormatInt(from, 10)),
-			tgbotapi.NewInlineKeyboardButtonData("Відхилити", "R "+strconv.FormatInt(from, 10)),
-		))
+	inlineMarkup := NewInlineKeyboardMarkup(
+		[]gotgbot.InlineKeyboardButton{
+			NewInlineKeyboardButton("Прийняти", "A "+strconv.FormatInt(from, 10)),
+			NewInlineKeyboardButton("Відхилити", "R "+strconv.FormatInt(from, 10)),
+		})
 	SendMessage(to, "Запрошення на гру від "+fromName, inlineMarkup)
 }
 
-func ProcessCallbackQuery(update tgbotapi.Update) {
-	from := update.CallbackQuery.From
-	data := update.CallbackQuery.Data
+func ProcessCallbackQuery(b *gotgbot.Bot, ctx *ext.Context) error {
+	from := ctx.CallbackQuery.From
+	data := ctx.CallbackQuery.Data
 	switch data[0] {
 	case 'A': //Accept
 		toID, err := strconv.ParseInt(data[2:], 10, 0)
@@ -255,7 +277,7 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 		}
 		var to MongoUser
 		UserStatusC.FindOne(context.TODO(), bson.M{"_id": toID}).Decode(&to)
-		AcceptInvite(from.ID, from.FirstName+" "+from.LastName, toID, to.Name, UserMap[toID].GameName)
+		AcceptInvite(from.Id, from.FirstName+" "+from.LastName, toID, to.Name, UserMap[toID].GameName)
 	case 'R': //Reject
 		ToID, err := strconv.ParseInt(data[2:], 10, 0)
 		if err != nil {
@@ -265,16 +287,18 @@ func ProcessCallbackQuery(update tgbotapi.Update) {
 	case 'I': //Invite
 		var game MongoGame
 		if ID, err := primitive.ObjectIDFromHex(data[2:]); err == nil && GameStateC.FindOne(context.TODO(), bson.M{"_id": ID}).Decode(&game) == nil {
-			user, _ := GetUserStatus(from.ID)
+			user, _ := GetUserStatus(from.Id)
 			user.GameName = game.Name
 			user.GameNamePending = false
 			user.ContactPending = true
 
-			SendMessage(from.ID, "Додайте контакт")
+			SendMessage(from.Id, "Додайте контакт")
 		}
 	case 'S': //Score
-		SendMessage(from.ID, data[2:])
+		SendMessage(from.Id, data[2:])
 	}
+
+	return nil
 }
 
 func AcceptInvite(from int64, fromName string, to int64, toName, gameName string) {
@@ -309,17 +333,17 @@ func RejectInvite(fromName string, to int64) {
 }
 
 func SendMessage(to int64, text string, inlineMarkup ...interface{}) {
+	var opts gotgbot.SendMessageOpts
 	if text != "" {
-		msg := tgbotapi.NewMessage(to, text)
 		if len(inlineMarkup) > 0 {
-			if markup, ok := inlineMarkup[0].(tgbotapi.InlineKeyboardMarkup); ok {
-				msg.ReplyMarkup = markup
+			if markup, ok := inlineMarkup[0].(gotgbot.InlineKeyboardMarkup); ok {
+				opts.ReplyMarkup = markup
 			}
 		}
 		// Note that panics are a bad way to handle errors. Telegram can
 		// have service outages or network errors, you should retry sending
 		// messages or more gracefully handle failures.
-		if _, err := bot.Send(msg); err != nil {
+		if _, err := bot.SendMessage(to, text, &opts); err != nil {
 			panic(err)
 		}
 	}
@@ -339,11 +363,7 @@ func UpdateScore(from int64, query string) string {
 
 	var User MongoUser
 	if err := UserStatusC.FindOne(context.TODO(), bson.M{"_id": from}).Decode(&User); err != nil {
-		if err == mongo.ErrNoDocuments {
-			return ErrStartBot.Error()
-		} else {
-			return ErrGeneric.Error()
-		}
+		return ErrGeneric.Error()
 	} else {
 		if User.Games == nil {
 			return "Не має початих ігор"
