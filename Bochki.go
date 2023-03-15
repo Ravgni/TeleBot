@@ -41,7 +41,7 @@ func main() {
 	GameStateC = client.Database("BochkiDB").Collection("Games")
 
 	token := os.Getenv("TELEGRAM_BOCHKI")
-	port, _ := strconv.Atoi(os.Getenv("PORT"))
+	port := os.Getenv("PORT")
 	webhookDomain := os.Getenv("WEBHOOK_DOMAIN")
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
 
@@ -59,15 +59,14 @@ func main() {
 
 	// Create updater and dispatcher.
 	updater := ext.NewUpdater(&ext.UpdaterOpts{
-		ErrorLog: nil,
-		DispatcherOpts: ext.DispatcherOpts{
+		Dispatcher: ext.NewDispatcher(&ext.DispatcherOpts{
 			// If an error is returned by a handler, log it and continue going.
 			Error: func(b *gotgbot.Bot, ctx *ext.Context, err error) ext.DispatcherAction {
 				fmt.Println("an error occurred while handling update:", err.Error())
 				return ext.DispatcherActionNoop
 			},
 			MaxRoutines: ext.DefaultMaxRoutines,
-		},
+		}),
 	})
 	dispatcher := updater.Dispatcher
 
@@ -80,24 +79,18 @@ func main() {
 	// Start the webhook server. We start the server before we set the webhook itself, so that when telegram starts
 	// sending updates, the server is already ready.
 	webhookOpts := ext.WebhookOpts{
-		Listen:      "0.0.0.0", // This example assumes you're in a dev environment running ngrok on 8080.
-		Port:        port,
-		URLPath:     token,         // Using a secret (like the token) as the endpoint ensure that strangers aren't crafting fake updates.
-		SecretToken: webhookSecret, // Setting a webhook secret (must be here AND in SetWebhook!) ensures that the webhook is set by you.
+		ListenAddr:  "0.0.0.0:" + port, // This example assumes you're in a dev environment running ngrok on 8080.
+		SecretToken: webhookSecret,     // Setting a webhook secret (must be here AND in SetWebhook!) ensures that the webhook is set by you.
 	}
-	err = updater.StartWebhook(bot, webhookOpts)
+	err = updater.StartWebhook(bot, token, webhookOpts)
 	if err != nil {
 		panic("failed to start webhook: " + err.Error())
 	}
 
-	// Get the full webhook URL that we are expecting to receive updates at.
-	webhookURL := webhookOpts.GetWebhookURL(webhookDomain)
-
-	// Tell telegram where they should send updates for you to receive them in a secure manner.
-	_, err = bot.SetWebhook(webhookURL, &gotgbot.SetWebhookOpts{
+	err = updater.SetAllBotWebhooks(webhookDomain, &gotgbot.SetWebhookOpts{
 		MaxConnections:     100,
 		DropPendingUpdates: true,
-		SecretToken:        webhookSecret, // The secret token passed at webhook start time.
+		SecretToken:        webhookOpts.SecretToken,
 	})
 	if err != nil {
 		panic("failed to set webhook: " + err.Error())
