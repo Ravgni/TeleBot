@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -46,31 +45,23 @@ func main() {
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
 
 	var err error
-	bot, err = gotgbot.NewBot(token, &gotgbot.BotOpts{
-		Client: http.Client{},
-		DefaultRequestOpts: &gotgbot.RequestOpts{
-			Timeout: gotgbot.DefaultTimeout,
-			APIURL:  gotgbot.DefaultAPIURL,
-		},
-	})
+	bot, err = gotgbot.NewBot(token, nil)
 	if err != nil {
 		panic(err)
 	}
 
 	// Create updater and dispatcher.
-	updater := ext.NewUpdater(&ext.UpdaterOpts{
-		Dispatcher: ext.NewDispatcher(&ext.DispatcherOpts{
-			// If an error is returned by a handler, log it and continue going.
-			Error: func(b *gotgbot.Bot, ctx *ext.Context, err error) ext.DispatcherAction {
-				fmt.Println("an error occurred while handling update:", err.Error())
-				return ext.DispatcherActionNoop
-			},
-			MaxRoutines: ext.DefaultMaxRoutines,
-		}),
+	dispatcher := ext.NewDispatcher(&ext.DispatcherOpts{
+		// If an error is returned by a handler, log it and continue going.
+		Error: func(b *gotgbot.Bot, ctx *ext.Context, err error) ext.DispatcherAction {
+			log.Println("an error occurred while handling update:", err.Error())
+			return ext.DispatcherActionNoop
+		},
+		MaxRoutines: ext.DefaultMaxRoutines,
 	})
-	dispatcher := updater.Dispatcher
+	updater := ext.NewUpdater(dispatcher, nil)
 
-	dispatcher.AddHandler(handlers.NewInlineQuery(inlinequery.All, ProcessQuery))
+		dispatcher.AddHandler(handlers.NewInlineQuery(inlinequery.All, ProcessQuery))
 	dispatcher.AddHandler(handlers.NewChosenInlineResult(choseninlineresult.All, ProcessQueryResult))
 	dispatcher.AddHandler(handlers.NewMessage(message.Command, ProcessCommand))
 	dispatcher.AddHandler(handlers.NewMessage(message.Text, ProcessMessage))
@@ -396,7 +387,7 @@ func UpdateScore(from int64, query string) string {
 }
 
 func GetScore(from int64) *map[string]string {
-	var ret map[string]string
+	var ret = make(map[string]string)
 	var results []bson.M
 
 	matchstage := bson.D{{Key: "$match", Value: bson.M{"_id": from}}}
